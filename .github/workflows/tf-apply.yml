@@ -1,0 +1,116 @@
+name: 'Terraform Apply'
+
+on:
+  push:
+    branches:
+      - main 
+    paths:
+      - 'terraform/services/**.tf'  
+      - 'terraform/services/**.tfvars'  
+      - '.github/workflows/**.yml'
+
+env:
+  TF_VERSION: '1.11.4'  
+  AWS_REGION: 'ap-southeast-1'  
+
+jobs:
+  detect-changed-dirs:
+    name: Detect Changed Directories
+    runs-on: ubuntu-latest
+    outputs:
+      dirs: ${{ steps.find-dirs.outputs.dirs }}
+      
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  
+
+      - name: Find Changed Terraform Directories
+        id: find-dirs
+        run: |
+          CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep -E '^terraform/services/.*\.(tf|tfvars)$' || echo "")
+
+          if [ -n "$CHANGED_FILES" ]; then
+            DIRS=$(echo "$CHANGED_FILES" | xargs dirname | sort -u | jq -R -s -c 'split("\n")[:-1]')
+          else
+            DIRS="[]"
+          fi
+          
+          echo "dirs=$DIRS" >> $GITHUB_OUTPUT
+          echo "Changed directories: $DIRS"
+
+  terraform-apply:
+    name: Terraform Apply
+    needs: detect-changed-dirs
+    if: ${{ needs.detect-changed-dirs.outputs.dirs != '[]' }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        directory: ${{ fromJSON(needs.detect-changed-dirs.outputs.dirs) }}
+      fail-fast: false
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Configure AWS CLI
+        run: |
+          url https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip \
+          && unzip awscliv2.zip \
+          && ./aws/install \
+          && rm -rf aws awscliv2.zip
+          mkdir -p ~/.aws
+          cat > ~/.aws/credentials << EOF
+          [default]
+          aws_access_key_id=${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws_secret_access_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          EOF
+          cat > ~/.aws/config << EOF
+          [default]
+          region=${{ env.AWS_REGION }}
+          output=json
+          EOF
+          aws sts get-caller-identity      
+
+      - name: Setup Terraform
+        
+        run: |
+          # Install Terraform if not already available
+          wget -O- https://apt.releases.hashicorp.com/gpg | \
+          gpg --dearmor | \
+          sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] \
+          https://apt.releases.hashicorp.com $(lsb_release -cs) main" | \
+          sudo tee /etc/apt/sources.list.d/hashicorp.list
+          sudo apt update
+          sudo apt-get install terraform
+    
+          # Verify Terraform installation
+          terraform version
+
+      - name: Terraform Init
+        working-directory: ${{ matrix.directory }}
+        run: terraform init      
+
+      - name: Terraform Init
+        working-directory: ${{ matrix.directory }}
+        run: terraform init
+
+      - name: Terraform Validate
+        working-directory: ${{ matrix.directory }}
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ matrix.directory }}
+        run: terraform plan -no-color -out=tfplan
+      
+      - name: Terraform Apply
+        id: apply
+        working-directory: ${{ matrix.directory }}
+        run: terraform apply -auto-approve tfplan
+        
+      - name: Terraform Apply Status
+        if: steps.apply.outcome == 'failure'
+        run: exit 1

@@ -1,0 +1,84 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [ '**' ]
+    paths:
+      - 'app/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'app/**'
+  # Enable manual trigger from GitHub Actions tab
+  workflow_dispatch:
+
+jobs:
+  build_and_push:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl
+          mkdir -p ~/.docker/cli-plugins/
+          curl -L "https://github.com/docker/buildx/releases/download/v0.10.4/buildx-v0.10.4.linux-amd64" -o ~/.docker/cli-plugins/docker-buildx
+          chmod +x ~/.docker/cli-plugins/docker-buildx
+          docker buildx create --name mybuilder --use
+          docker buildx inspect --bootstrap
+      
+      - name: Login to Docker Hub
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin      
+      
+      - name: Extract metadata for Docker
+        id: meta
+        run: |
+          echo "IMAGE_NAME=${{ secrets.DOCKERHUB_USERNAME }}/clock-app" >> $GITHUB_ENV
+          echo "DOCKER_LATEST_TAG=${{ secrets.DOCKERHUB_USERNAME }}/clock-app:latest" >> $GITHUB_ENV
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          echo "DOCKER_SHA_TAG=${{ secrets.DOCKERHUB_USERNAME }}/clock-app:$SHORT_SHA" >> $GITHUB_ENV
+          echo "TAGS=${{ secrets.DOCKERHUB_USERNAME }}/clock-app:latest,${{ secrets.DOCKERHUB_USERNAME }}/clock-app:$SHORT_SHA" >> $GITHUB_ENV
+          echo "tags=${{ secrets.DOCKERHUB_USERNAME }}/clock-app:latest,${{ secrets.DOCKERHUB_USERNAME }}/clock-app:$SHORT_SHA" >> $GITHUB_OUTPUT
+
+      - name: Build and push to Docker Hub
+        run: |
+          export DOCKER_BUILDKIT=1
+          IFS=',' read -ra TAG_ARRAY <<< "${{ steps.meta.outputs.tags }}"
+          BUILD_CMD="docker build ./app -f ./app/Dockerfile"
+          for tag in "${TAG_ARRAY[@]}"; do
+            BUILD_CMD="$BUILD_CMD -t $tag"
+          done
+
+          if [ -n "${{ steps.meta.outputs.labels }}" ]; then
+            IFS=',' read -ra LABEL_ARRAY <<< "${{ steps.meta.outputs.labels }}"
+            for label in "${LABEL_ARRAY[@]}"; do
+              BUILD_CMD="$BUILD_CMD --label $label"
+            done
+          fi
+          
+          echo "Executing: $BUILD_CMD"
+          eval $BUILD_CMD
+          
+          for tag in "${TAG_ARRAY[@]}"; do
+            echo "Pushing: $tag"
+            docker push $tag
+          done
+
+      - name: Add SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          # ssh-keyscan -H ${{ secrets.INSTANCE_IP }} >> ~/.ssh/known_hosts
+          echo "${{ secrets.INSTANCE_IP }}" >> ~/.ssh/known_hosts
+      - name: Deploy Application
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.USER }}@${{ secrets.INSTANCE_IP }} << 'EOF'
+          docker pull kangnasir/clock-app:latest
+          docker stop $(docker ps -a -q) || true
+          docker run -d -p 5000:5000 kangnasir/clock-app:latest
+          EOF

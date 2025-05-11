@@ -1,0 +1,148 @@
+name: 'Terraform Plan'
+
+on:
+  push:
+    branches: [ '**' ] 
+    paths:
+      - 'terraform/services/**.tf' 
+      - 'terraform/services/**.tfvars'  
+      - '.github/workflows/tf-plan.yml'
+
+env:
+  TF_VERSION: '1.11.4'  
+  AWS_REGION: 'ap-southeast-1'  
+
+jobs:
+  detect-changed-dirs:
+    name: Detect Changed Directories
+    runs-on: ubuntu-latest
+    outputs:
+      dirs: ${{ steps.find-dirs.outputs.dirs }}
+      
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  
+
+      - name: Find Changed Terraform Directories
+        id: find-dirs
+        run: |
+          # Handle different event types
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "Processing Pull Request event"
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.sha }}"
+            
+            if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+              echo "Base SHA is empty or zero. Using all terraform files."
+              CHANGED_FILES=$(find terraform/services -type f -name "*.tf" -o -name "*.tfvars" | sort)
+            else
+              echo "Comparing $BASE_SHA with $HEAD_SHA"
+              CHANGED_FILES=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -E '^terraform/services/.*\.(tf|tfvars)$' || echo "")
+            fi
+            
+          elif [ "${{ github.event_name }}" == "push" ]; then
+            echo "Processing Push event"
+            BEFORE_SHA="${{ github.event.before }}"
+            AFTER_SHA="${{ github.event.after }}"
+            
+            if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+              echo "Before SHA is empty or zero. Getting all committed files."
+              CHANGED_FILES=$(git ls-tree --name-only -r HEAD | grep -E '^terraform/services/.*\.(tf|tfvars)$' || echo "")
+            else
+              echo "Comparing $BEFORE_SHA with $AFTER_SHA"
+              CHANGED_FILES=$(git diff --name-only "$BEFORE_SHA" "$AFTER_SHA" | grep -E '^terraform/services/.*\.(tf|tfvars)$' || echo "")
+            fi
+          else
+            echo "Processing other event type"
+            CHANGED_FILES=$(find terraform/services -type f -name "*.tf" -o -name "*.tfvars" | sort)
+          fi
+          
+          # Process the changed files to get directories
+          if [ -n "$CHANGED_FILES" ]; then
+            echo "Found changed files:"
+            echo "$CHANGED_FILES"
+            DIRS=$(echo "$CHANGED_FILES" | xargs -I{} dirname {} 2>/dev/null | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))' || echo "[]")
+          else
+            echo "No changed terraform files detected"
+            DIRS="[]"
+          fi
+          
+          echo "dirs=$DIRS" >> $GITHUB_OUTPUT
+          echo "Changed directories: $DIRS"
+
+  terraform-plan:
+    name: Terraform Plan
+    needs: detect-changed-dirs
+    if: ${{ needs.detect-changed-dirs.outputs.dirs != '[]' }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        directory: ${{ fromJSON(needs.detect-changed-dirs.outputs.dirs) }}
+      fail-fast: false
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Configure AWS CLI
+        run: |
+          # Install AWS CLI if not already available
+          url https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip \
+          && unzip awscliv2.zip \
+          && ./aws/install \
+          && rm -rf aws awscliv2.zip
+    
+          # Configure AWS credentials
+          mkdir -p ~/.aws
+    
+          # Create credentials file
+          cat > ~/.aws/credentials << EOF
+          [default]
+          aws_access_key_id=${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws_secret_access_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          EOF
+    
+          # Create config file with region
+          cat > ~/.aws/config << EOF
+          [default]
+          region=${{ env.AWS_REGION }}
+          output=json
+          EOF
+    
+          # Verify credentials are working (optional)
+          aws sts get-caller-identity
+      - name: Setup Terraform
+        
+        run: |
+          # Install Terraform if not already available
+          wget -O- https://apt.releases.hashicorp.com/gpg | \
+          gpg --dearmor | \
+          sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] \
+          https://apt.releases.hashicorp.com $(lsb_release -cs) main" | \
+          sudo tee /etc/apt/sources.list.d/hashicorp.list
+          sudo apt update
+          sudo apt-get install terraform
+    
+          # Verify Terraform installation
+          terraform version
+
+      - name: Terraform Init
+        working-directory: ${{ matrix.directory }}
+        run: terraform init
+
+      - name: Terraform Validate
+        working-directory: ${{ matrix.directory }}
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ matrix.directory }}
+        run: terraform plan -no-color
+        continue-on-error: true
+        
+      - name: Terraform Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
