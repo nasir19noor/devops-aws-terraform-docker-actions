@@ -26,7 +26,7 @@ PubkeyAuthentication yes
 PubkeyAcceptedAlgorithms +ssh-rsa
 ```
 3. Add Authorized Key
-- Navigate to /home/<username> directory
+- Navigate to /home/$<username> directory
 - Create and configure .ssh direcroy
 ```
 mkdir .ssh
@@ -34,7 +34,7 @@ chmod 700 .ssh
 chmod -R go= .ssh
 chown -R <username>:<username> .ssh
 ```
-- Create and configure authorized_keys file. Navigate to /home/<username>/.ssh/ directory
+- Create and configure authorized_keys file. Navigate to /home/$<username>/.ssh/ directory
 ```
 touch authorized_keys
 chmod 600 authorized_keys
