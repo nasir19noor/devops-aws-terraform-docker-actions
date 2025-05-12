@@ -87,11 +87,7 @@ jobs:
           sudo apt-get install terraform
     
           # Verify Terraform installation
-          terraform version
-
-      - name: Terraform Init
-        working-directory: ${{ matrix.directory }}
-        run: terraform init      
+          terraform version   
 
       - name: Terraform Init
         working-directory: ${{ matrix.directory }}
