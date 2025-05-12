@@ -25,8 +25,8 @@ PubkeyAuthentication yes
 ```
 PubkeyAcceptedAlgorithms +ssh-rsa
 ```
-3. Add Authorized Key
-- Navigate to /home/\<username>\ directory
+3. Add Public Key to Authorized Key
+- Navigate to /home/\<username> directory
 - Create and configure .ssh direcroy
 ```
 mkdir .ssh
@@ -40,3 +40,8 @@ touch authorized_keys
 chmod 600 authorized_keys
 ```
 - Copy paste your public key that you created previously to this file
+
+Then restart ssh
+```
+service ssh restart
+```
