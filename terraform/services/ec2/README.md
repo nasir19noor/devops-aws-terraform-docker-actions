@@ -1,4 +1,4 @@
-# AWS EC2 Instance Terraform module
+# AWS EC2 Configuration
 
 After provisioning the EC2 instance, you may access the server securely through AWS Systems Manager (SSM), switch to root user and proceed with the following administrative tasks:
 1. Add User
